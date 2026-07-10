@@ -23,4 +23,23 @@ function requireAuth(req, res, next) {
   }
 }
 
-module.exports = { requireAuth };
+/**
+ * Optional auth: if a valid token is present, attach req.userId; otherwise
+ * continue as an anonymous (public) request. Used on read routes so logged-out
+ * visitors can browse the base breed list.
+ */
+function optionalAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+
+  if (token) {
+    try {
+      req.userId = jwt.verify(token, process.env.JWT_SECRET).sub;
+    } catch {
+      // Ignore an invalid token on public reads — just treat as anonymous.
+    }
+  }
+  next();
+}
+
+module.exports = { requireAuth, optionalAuth };

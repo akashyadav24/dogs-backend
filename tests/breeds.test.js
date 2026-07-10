@@ -72,10 +72,20 @@ describe('auth', () => {
   });
 });
 
-describe('breeds require authentication', () => {
-  it('401s without a token', async () => {
-    expect((await request(app).get('/api/breeds')).status).toBe(401);
+describe('public reads vs protected writes', () => {
+  it('serves the base breed list to anonymous visitors', async () => {
+    const res = await request(app).get('/api/breeds');
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeGreaterThan(50);
+    // The base list is a template, not tied to any user.
+    expect((await request(app).get('/api/breeds/pug')).status).toBe(200);
+  });
+
+  it('401s on writes without a token', async () => {
     expect((await request(app).post('/api/breeds').send({ name: 'x' })).status).toBe(401);
+    expect((await request(app).put('/api/breeds/pug').send({ name: 'y' })).status).toBe(401);
+    expect((await request(app).delete('/api/breeds/pug')).status).toBe(401);
+    expect((await request(app).post('/api/breeds/pug/sub-breeds').send({ subBreed: 's' })).status).toBe(401);
   });
 });
 

@@ -1,9 +1,20 @@
 const Breed = require('../models/breed');
 const { ApiError } = require('../middleware/errorHandler');
 const { normaliseName, normaliseSubBreeds } = require('../middleware/validate');
+const { loadSeedBreeds } = require('../seed');
 
 // Wrap async handlers so thrown/rejected errors reach the error middleware.
 const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+// Base breed list shown to anonymous (logged-out) visitors, cached from
+// dogs.json and sorted by name. Registered users see their own DB copy instead.
+let baseCache = null;
+function baseBreeds() {
+  if (!baseCache) {
+    baseCache = loadSeedBreeds().sort((a, b) => a.name.localeCompare(b.name));
+  }
+  return baseCache;
+}
 
 // Fetch one of THIS user's breeds by name, or throw a 404. Every query is
 // scoped by userId so users can only ever see/modify their own data.
@@ -15,11 +26,19 @@ async function findBreedOr404(userId, name) {
 
 // GET /api/breeds?search=
 const listBreeds = asyncHandler(async (req, res) => {
-  const { search } = req.query;
-  const query = { userId: req.userId };
+  const term = (req.query.search || '').trim().toLowerCase();
 
-  if (search && search.trim()) {
-    const term = search.trim().toLowerCase();
+  // Anonymous visitor: serve the read-only base list.
+  if (!req.userId) {
+    let list = baseBreeds();
+    if (term) {
+      list = list.filter((b) => b.name.includes(term) || b.subBreeds.some((s) => s.includes(term)));
+    }
+    return res.json(list);
+  }
+
+  const query = { userId: req.userId };
+  if (term) {
     // Match either the breed name or any of its sub-breeds.
     query.$or = [{ name: new RegExp(term, 'i') }, { subBreeds: new RegExp(term, 'i') }];
   }
@@ -31,6 +50,14 @@ const listBreeds = asyncHandler(async (req, res) => {
 // GET /api/breeds/:name
 const getBreed = asyncHandler(async (req, res) => {
   const name = normaliseName(req.params.name, 'breed name');
+
+  // Anonymous visitor: look up in the base list.
+  if (!req.userId) {
+    const found = baseBreeds().find((b) => b.name === name);
+    if (!found) throw new ApiError(404, `Breed not found: ${name}`);
+    return res.json(found);
+  }
+
   const breed = await findBreedOr404(req.userId, name);
   res.json(breed);
 });
