@@ -24,9 +24,13 @@ function readCredentials(body) {
 const register = asyncHandler(async (req, res) => {
   const { email, password } = readCredentials(req.body);
 
-  // Registration enforces a valid email + minimum password strength.
+  // Registration validation: a valid email + a password of at least 6 characters.
+  // No complexity rules (no required uppercase/number/symbol). Capped at 72 —
+  // bcrypt silently ignores bytes beyond that.
   if (!EMAIL_RE.test(email)) throw new ApiError(400, 'A valid email address is required');
+  if (email.length > 254) throw new ApiError(400, 'Email is too long');
   if (password.length < 6) throw new ApiError(400, 'Password must be at least 6 characters');
+  if (password.length > 72) throw new ApiError(400, 'Password must be at most 72 characters');
 
   const existing = await User.findOne({ email });
   if (existing) throw new ApiError(409, 'An account with that email already exists');
