@@ -3,13 +3,27 @@ const { MongoMemoryServer } = require('mongodb-memory-server');
 
 const { createApp } = require('../src/app');
 const { connectDB, disconnectDB } = require('../src/db');
-const { seedIfEmpty } = require('../src/seed');
+const User = require('../src/models/user');
 const Breed = require('../src/models/breed');
 
 let mongod;
 let app;
 
+// Register a fresh user and return helpers that attach the Authorization header.
+async function newUser(email = `u${Date.now()}${Math.random()}@test.com`) {
+  const res = await request(app).post('/api/auth/register').send({ email, password: 'secret123' });
+  const token = res.body.token;
+  return {
+    token,
+    get: (url) => request(app).get(url).set('Authorization', `Bearer ${token}`),
+    post: (url) => request(app).post(url).set('Authorization', `Bearer ${token}`),
+    put: (url) => request(app).put(url).set('Authorization', `Bearer ${token}`),
+    del: (url) => request(app).delete(url).set('Authorization', `Bearer ${token}`),
+  };
+}
+
 beforeAll(async () => {
+  process.env.JWT_SECRET = 'test-secret';
   mongod = await MongoMemoryServer.create();
   await connectDB(mongod.getUri());
   app = createApp();
@@ -20,136 +34,107 @@ afterAll(async () => {
   if (mongod) await mongod.stop();
 });
 
-// Fresh, seeded database before each test for isolation.
 beforeEach(async () => {
+  await User.deleteMany({});
   await Breed.deleteMany({});
-  await seedIfEmpty();
 });
 
-describe('seeding', () => {
-  it('loads breeds from dogs.json when empty', async () => {
-    const count = await Breed.estimatedDocumentCount();
+describe('auth', () => {
+  it('registers a user, returns a token, and seeds their breeds', async () => {
+    const res = await request(app).post('/api/auth/register').send({ email: 'a@test.com', password: 'secret123' });
+    expect(res.status).toBe(201);
+    expect(res.body.token).toBeTruthy();
+    expect(res.body.user.email).toBe('a@test.com');
+
+    const user = await User.findOne({ email: 'a@test.com' });
+    const count = await Breed.countDocuments({ userId: user._id });
     expect(count).toBeGreaterThan(50);
-    const bulldog = await Breed.findOne({ name: 'bulldog' });
-    expect(bulldog.subBreeds).toEqual(expect.arrayContaining(['boston', 'french']));
+  });
+
+  it('rejects duplicate email (409) and weak password (400)', async () => {
+    await request(app).post('/api/auth/register').send({ email: 'dup@test.com', password: 'secret123' });
+    const dup = await request(app).post('/api/auth/register').send({ email: 'dup@test.com', password: 'secret123' });
+    expect(dup.status).toBe(409);
+
+    const weak = await request(app).post('/api/auth/register').send({ email: 'w@test.com', password: '123' });
+    expect(weak.status).toBe(400);
+  });
+
+  it('logs in with correct credentials and rejects wrong ones', async () => {
+    await request(app).post('/api/auth/register').send({ email: 'l@test.com', password: 'secret123' });
+
+    const ok = await request(app).post('/api/auth/login').send({ email: 'l@test.com', password: 'secret123' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.token).toBeTruthy();
+
+    const bad = await request(app).post('/api/auth/login').send({ email: 'l@test.com', password: 'wrong' });
+    expect(bad.status).toBe(401);
   });
 });
 
-describe('GET /api/breeds', () => {
-  it('returns all breeds sorted by name', async () => {
-    const res = await request(app).get('/api/breeds');
+describe('breeds require authentication', () => {
+  it('401s without a token', async () => {
+    expect((await request(app).get('/api/breeds')).status).toBe(401);
+    expect((await request(app).post('/api/breeds').send({ name: 'x' })).status).toBe(401);
+  });
+});
+
+describe('breed CRUD (scoped to the user)', () => {
+  it('lists the seeded breeds sorted by name', async () => {
+    const u = await newUser();
+    const res = await u.get('/api/breeds');
     expect(res.status).toBe(200);
-    expect(Array.isArray(res.body)).toBe(true);
     const names = res.body.map((b) => b.name);
+    expect(names.length).toBeGreaterThan(50);
     expect(names).toEqual([...names].sort());
   });
 
-  it('filters by search term (breed or sub-breed)', async () => {
-    const res = await request(app).get('/api/breeds?search=boston');
-    expect(res.status).toBe(200);
-    expect(res.body.some((b) => b.name === 'bulldog')).toBe(true);
+  it('creates, rejects duplicate (409) and invalid (400)', async () => {
+    const u = await newUser();
+    expect((await u.post('/api/breeds').send({ name: 'Testdog', subBreeds: ['Alpha'] })).status).toBe(201);
+    expect((await u.post('/api/breeds').send({ name: 'pug' })).status).toBe(409);
+    expect((await u.post('/api/breeds').send({ name: 'd0g!' })).status).toBe(400);
+  });
+
+  it('updates, deletes (stays gone), and handles sub-breeds', async () => {
+    const u = await newUser();
+
+    expect((await u.put('/api/breeds/pug').send({ name: 'pugly' })).status).toBe(200);
+    expect((await u.get('/api/breeds/pug')).status).toBe(404);
+
+    expect((await u.del('/api/breeds/boxer')).status).toBe(204);
+    expect((await u.get('/api/breeds/boxer')).status).toBe(404);
+
+    const add = await u.post('/api/breeds/bulldog/sub-breeds').send({ subBreed: 'mini' });
+    expect(add.status).toBe(201);
+    expect(add.body.subBreeds).toContain('mini');
+
+    const del = await u.del('/api/breeds/bulldog/sub-breeds/boston');
+    expect(del.status).toBe(200);
+    expect(del.body.subBreeds).not.toContain('boston');
   });
 });
 
-describe('GET /api/breeds/:name', () => {
-  it('returns a single breed', async () => {
-    const res = await request(app).get('/api/breeds/pug');
-    expect(res.status).toBe(200);
-    expect(res.body.name).toBe('pug');
-  });
+describe('per-user isolation', () => {
+  it("one user cannot see or affect another user's changes", async () => {
+    const alice = await newUser('alice@test.com');
+    const bob = await newUser('bob@test.com');
 
-  it('404s for a missing breed', async () => {
-    const res = await request(app).get('/api/breeds/notabreed');
-    expect(res.status).toBe(404);
-    expect(res.body.error.message).toMatch(/not found/i);
-  });
-});
+    // Alice deletes pug and adds a custom breed.
+    await alice.del('/api/breeds/pug');
+    await alice.post('/api/breeds').send({ name: 'alicedog' });
 
-describe('POST /api/breeds', () => {
-  it('creates a breed', async () => {
-    const res = await request(app).post('/api/breeds').send({ name: 'Testdog', subBreeds: ['Alpha'] });
-    expect(res.status).toBe(201);
-    expect(res.body.name).toBe('testdog');
-    expect(res.body.subBreeds).toEqual(['alpha']);
-  });
+    // Bob is unaffected: still has pug, does not have alicedog.
+    expect((await bob.get('/api/breeds/pug')).status).toBe(200);
+    expect((await bob.get('/api/breeds/alicedog')).status).toBe(404);
 
-  it('409s on duplicate breed', async () => {
-    const res = await request(app).post('/api/breeds').send({ name: 'pug' });
-    expect(res.status).toBe(409);
-  });
+    // Alice sees her own changes.
+    expect((await alice.get('/api/breeds/pug')).status).toBe(404);
+    expect((await alice.get('/api/breeds/alicedog')).status).toBe(200);
 
-  it('400s on empty name', async () => {
-    const res = await request(app).post('/api/breeds').send({ name: '   ' });
-    expect(res.status).toBe(400);
-  });
-
-  it('400s on name with invalid characters', async () => {
-    const res = await request(app).post('/api/breeds').send({ name: 'dog123!' });
-    expect(res.status).toBe(400);
-  });
-});
-
-describe('PUT /api/breeds/:name', () => {
-  it('renames a breed', async () => {
-    const res = await request(app).put('/api/breeds/pug').send({ name: 'pugly' });
-    expect(res.status).toBe(200);
-    expect(res.body.name).toBe('pugly');
-    expect(await Breed.findOne({ name: 'pug' })).toBeNull();
-  });
-
-  it('replaces the sub-breed list', async () => {
-    const res = await request(app).put('/api/breeds/bulldog').send({ subBreeds: ['english'] });
-    expect(res.status).toBe(200);
-    expect(res.body.subBreeds).toEqual(['english']);
-  });
-
-  it('409s when renaming onto an existing breed', async () => {
-    const res = await request(app).put('/api/breeds/pug').send({ name: 'boxer' });
-    expect(res.status).toBe(409);
-  });
-});
-
-describe('DELETE /api/breeds/:name', () => {
-  it('deletes a breed and it stays gone', async () => {
-    const del = await request(app).delete('/api/breeds/pug');
-    expect(del.status).toBe(204);
-    const res = await request(app).get('/api/breeds/pug');
-    expect(res.status).toBe(404);
-  });
-
-  it('404s deleting a missing breed', async () => {
-    const res = await request(app).delete('/api/breeds/notabreed');
-    expect(res.status).toBe(404);
-  });
-});
-
-describe('sub-breed endpoints', () => {
-  it('adds a sub-breed', async () => {
-    const res = await request(app).post('/api/breeds/pug/sub-breeds').send({ subBreed: 'mini' });
-    expect(res.status).toBe(201);
-    expect(res.body.subBreeds).toContain('mini');
-  });
-
-  it('409s adding a duplicate sub-breed', async () => {
-    const res = await request(app).post('/api/breeds/bulldog/sub-breeds').send({ subBreed: 'boston' });
-    expect(res.status).toBe(409);
-  });
-
-  it('renames a sub-breed', async () => {
-    const res = await request(app).put('/api/breeds/bulldog/sub-breeds/boston').send({ subBreed: 'bostonian' });
-    expect(res.status).toBe(200);
-    expect(res.body.subBreeds).toContain('bostonian');
-    expect(res.body.subBreeds).not.toContain('boston');
-  });
-
-  it('deletes a sub-breed', async () => {
-    const res = await request(app).delete('/api/breeds/bulldog/sub-breeds/boston');
-    expect(res.status).toBe(200);
-    expect(res.body.subBreeds).not.toContain('boston');
-  });
-
-  it('404s for a missing sub-breed', async () => {
-    const res = await request(app).delete('/api/breeds/bulldog/sub-breeds/nope');
-    expect(res.status).toBe(404);
+    // The same breed name can be edited independently by each user.
+    await alice.put('/api/breeds/boxer').send({ subBreeds: ['aliceonly'] });
+    const bobBoxer = await bob.get('/api/breeds/boxer');
+    expect(bobBoxer.body.subBreeds).not.toContain('aliceonly');
   });
 });

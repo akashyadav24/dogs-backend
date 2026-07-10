@@ -1,7 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 
+const authRouter = require('./routes/auth');
 const breedsRouter = require('./routes/breeds');
+const { requireAuth } = require('./middleware/auth');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 function createApp() {
@@ -16,8 +18,11 @@ function createApp() {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // REST API.
-  app.use('/api/breeds', breedsRouter);
+  // Public auth routes (register / login).
+  app.use('/api/auth', authRouter);
+
+  // Breed routes require a valid token; each request is scoped to req.userId.
+  app.use('/api/breeds', requireAuth, breedsRouter);
 
   // Unknown routes -> 404, then central error handler.
   app.use(notFound);

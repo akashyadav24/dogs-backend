@@ -5,28 +5,30 @@ const Breed = require('./models/breed');
 // dogs.json lives at the repository root (one level up from src/).
 const SEED_FILE = path.join(__dirname, '..', 'dogs.json');
 
+/** Load and normalise the base breed list from dogs.json. */
+function loadSeedBreeds() {
+  const raw = fs.readFileSync(SEED_FILE, 'utf-8');
+  const data = JSON.parse(raw);
+  return Object.entries(data).map(([name, subBreeds]) => ({
+    name: name.toLowerCase().trim(),
+    subBreeds: Array.isArray(subBreeds) ? subBreeds.map((s) => s.toLowerCase().trim()) : [],
+  }));
+}
+
 /**
- * Seed the database from dogs.json — but ONLY if it is currently empty.
- * This makes startup idempotent: the initial data is loaded once, and user
- * edits are never overwritten on subsequent restarts (satisfies the
- * persistence requirement in the brief).
+ * Give a user their own copy of the base breeds — but only if they have none
+ * yet. Called on registration so every user starts from the same data, then
+ * edits their own private copy.
  */
-async function seedIfEmpty() {
-  const count = await Breed.estimatedDocumentCount();
+async function seedForUser(userId) {
+  const count = await Breed.countDocuments({ userId });
   if (count > 0) {
     return { seeded: false, count };
   }
 
-  const raw = fs.readFileSync(SEED_FILE, 'utf-8');
-  const data = JSON.parse(raw);
-
-  const docs = Object.entries(data).map(([name, subBreeds]) => ({
-    name: name.toLowerCase().trim(),
-    subBreeds: Array.isArray(subBreeds) ? subBreeds.map((s) => s.toLowerCase().trim()) : [],
-  }));
-
+  const docs = loadSeedBreeds().map((b) => ({ ...b, userId }));
   await Breed.insertMany(docs, { ordered: false });
   return { seeded: true, count: docs.length };
 }
 
-module.exports = { seedIfEmpty, SEED_FILE };
+module.exports = { seedForUser, loadSeedBreeds, SEED_FILE };
