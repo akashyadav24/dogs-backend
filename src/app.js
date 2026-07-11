@@ -9,10 +9,11 @@ function createApp() {
   const app = express();
 
   // Restrict CORS to the known frontend origin(s) when CORS_ORIGIN is set
-  // (comma-separated). If unset (e.g. local dev), allow any origin.
+  // (comma-separated). Trailing slashes are stripped so the value matches the
+  // browser's Origin header. If unset (e.g. local dev), allow any origin.
   const allowed = (process.env.CORS_ORIGIN || '')
     .split(',')
-    .map((o) => o.trim())
+    .map((o) => o.trim().replace(/\/+$/, ''))
     .filter(Boolean);
   app.use(cors({ origin: allowed.length ? allowed : true }));
   app.use(express.json());
