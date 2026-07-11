@@ -71,8 +71,8 @@ deleted breed stays deleted.
 
 ## Authentication & per-user data
 
-Email/password auth using **JWT**. Register or log in to receive a token, then send it
-as `Authorization: Bearer <token>` on write requests.
+**Username/password** auth using **JWT**. Register or log in to receive a token, then
+send it as `Authorization: Bearer <token>` on write requests.
 
 - **Reads are public.** Anonymous requests to `GET /api/breeds` return a read-only
   **base list** seeded from `dogs.json`.
@@ -80,7 +80,8 @@ as `Authorization: Bearer <token>` on write requests.
   base breeds; every create/update/delete is scoped to `req.userId`, so one user's
   changes never affect another's.
 
-Password policy: **minimum 6 characters, no complexity rules** (no required
+Credentials: **username** (3–30 characters; letters, numbers and `. _ -`) and a
+**password** of **minimum 6 characters, no complexity rules** (no required
 uppercase/number/symbol).
 
 ## API reference
@@ -91,11 +92,11 @@ Base path: `/api`. Bodies and responses are JSON. Errors use a consistent envelo
 
 ### Auth (public)
 
-| Method | Endpoint             | Body                    | Description                    |
-|--------|----------------------|-------------------------|--------------------------------|
-| `POST` | `/api/auth/register` | `{ email, password }`   | Create account → `{ token, user }` |
-| `POST` | `/api/auth/login`    | `{ email, password }`   | Log in → `{ token, user }`     |
-| `GET`  | `/api/auth/me`       | —                       | Current user (requires token)  |
+| Method | Endpoint             | Body                       | Description                    |
+|--------|----------------------|----------------------------|--------------------------------|
+| `POST` | `/api/auth/register` | `{ username, password }`   | Create account → `{ token, user }` |
+| `POST` | `/api/auth/login`    | `{ username, password }`   | Log in → `{ token, user }`     |
+| `GET`  | `/api/auth/me`       | —                          | Current user (requires token)  |
 
 ### Breeds
 
@@ -122,7 +123,7 @@ curl https://p01--dogs-backend--tkjgvp892kwn.code.run/api/breeds
 # Register and capture the token
 TOKEN=$(curl -s -X POST .../api/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email":"me@example.com","password":"secret123"}' | jq -r .token)
+  -d '{"username":"me","password":"secret123"}' | jq -r .token)
 
 # Authenticated: create a breed
 curl -X POST .../api/breeds \

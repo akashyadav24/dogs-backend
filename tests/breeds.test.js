@@ -10,8 +10,8 @@ let mongod;
 let app;
 
 // Register a fresh user and return helpers that attach the Authorization header.
-async function newUser(email = `u${Date.now()}${Math.random()}@test.com`) {
-  const res = await request(app).post('/api/auth/register').send({ email, password: 'secret123' });
+async function newUser(username = `u${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`) {
+  const res = await request(app).post('/api/auth/register').send({ username, password: 'secret123' });
   const token = res.body.token;
   return {
     token,
@@ -41,33 +41,36 @@ beforeEach(async () => {
 
 describe('auth', () => {
   it('registers a user, returns a token, and seeds their breeds', async () => {
-    const res = await request(app).post('/api/auth/register').send({ email: 'a@test.com', password: 'secret123' });
+    const res = await request(app).post('/api/auth/register').send({ username: 'alice', password: 'secret123' });
     expect(res.status).toBe(201);
     expect(res.body.token).toBeTruthy();
-    expect(res.body.user.email).toBe('a@test.com');
+    expect(res.body.user.username).toBe('alice');
 
-    const user = await User.findOne({ email: 'a@test.com' });
+    const user = await User.findOne({ username: 'alice' });
     const count = await Breed.countDocuments({ userId: user._id });
     expect(count).toBeGreaterThan(50);
   });
 
-  it('rejects duplicate email (409) and weak password (400)', async () => {
-    await request(app).post('/api/auth/register').send({ email: 'dup@test.com', password: 'secret123' });
-    const dup = await request(app).post('/api/auth/register').send({ email: 'dup@test.com', password: 'secret123' });
+  it('rejects duplicate username (409), invalid username (400) and weak password (400)', async () => {
+    await request(app).post('/api/auth/register').send({ username: 'dupuser', password: 'secret123' });
+    const dup = await request(app).post('/api/auth/register').send({ username: 'dupuser', password: 'secret123' });
     expect(dup.status).toBe(409);
 
-    const weak = await request(app).post('/api/auth/register').send({ email: 'w@test.com', password: '123' });
+    const badName = await request(app).post('/api/auth/register').send({ username: 'a b@', password: 'secret123' });
+    expect(badName.status).toBe(400);
+
+    const weak = await request(app).post('/api/auth/register').send({ username: 'weakpw', password: '123' });
     expect(weak.status).toBe(400);
   });
 
   it('logs in with correct credentials and rejects wrong ones', async () => {
-    await request(app).post('/api/auth/register').send({ email: 'l@test.com', password: 'secret123' });
+    await request(app).post('/api/auth/register').send({ username: 'loginuser', password: 'secret123' });
 
-    const ok = await request(app).post('/api/auth/login').send({ email: 'l@test.com', password: 'secret123' });
+    const ok = await request(app).post('/api/auth/login').send({ username: 'loginuser', password: 'secret123' });
     expect(ok.status).toBe(200);
     expect(ok.body.token).toBeTruthy();
 
-    const bad = await request(app).post('/api/auth/login').send({ email: 'l@test.com', password: 'wrong' });
+    const bad = await request(app).post('/api/auth/login').send({ username: 'loginuser', password: 'wrong' });
     expect(bad.status).toBe(401);
   });
 });
@@ -127,8 +130,8 @@ describe('breed CRUD (scoped to the user)', () => {
 
 describe('per-user isolation', () => {
   it("one user cannot see or affect another user's changes", async () => {
-    const alice = await newUser('alice@test.com');
-    const bob = await newUser('bob@test.com');
+    const alice = await newUser('aliceiso');
+    const bob = await newUser('bobiso');
 
     // Alice deletes pug and adds a custom breed.
     await alice.del('/api/breeds/pug');

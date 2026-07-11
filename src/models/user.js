@@ -1,12 +1,12 @@
 const mongoose = require('mongoose');
 
 /**
- * An application user. Only email + a bcrypt password hash are stored.
+ * An application user. Only a username + a bcrypt password hash are stored.
  * Each user owns their own set of breeds (see models/breed.js).
  */
 const userSchema = new mongoose.Schema(
   {
-    email: {
+    username: {
       type: String,
       required: true,
       unique: true,

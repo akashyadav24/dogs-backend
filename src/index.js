@@ -21,9 +21,14 @@ async function start() {
     await connectDB(MONGODB_URI);
     console.log('Connected to MongoDB');
 
-    // Reconcile indexes with the current schemas. This migrates any legacy
-    // global unique index on breed name to the per-user compound index.
-    await Promise.all([User.syncIndexes(), Breed.syncIndexes()]);
+    // Reconcile indexes with the current schemas (e.g. migrating legacy indexes).
+    // Non-fatal: if reconciliation fails (e.g. legacy data conflicts), log and
+    // continue — the controllers still enforce uniqueness on writes.
+    try {
+      await Promise.all([User.syncIndexes(), Breed.syncIndexes()]);
+    } catch (err) {
+      console.warn('Index sync skipped:', err.message);
+    }
 
     // Breeds are seeded per-user on registration (see controllers/auth), so
     // there is no global seed step at startup.
