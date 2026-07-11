@@ -71,8 +71,14 @@ deleted breed stays deleted.
 
 ## Authentication & per-user data
 
-**Username/password** auth using **JWT**. Register or log in to receive a token, then
-send it as `Authorization: Bearer <token>` on write requests.
+**Username/password** auth using **JWT**. Register or log in to receive a **short-lived
+access token** (sent as `Authorization: Bearer <token>` on write requests) and a
+**long-lived refresh token**.
+
+**Refresh-token rotation:** access tokens expire quickly (15 min); the client silently
+exchanges the refresh token at `POST /api/auth/refresh` for a new pair. Each refresh
+token is single-use — using it invalidates it and issues a new one, and it can be
+revoked at `POST /api/auth/logout`. Tokens are stored hashed with a TTL index.
 
 - **Reads are public.** Anonymous requests to `GET /api/breeds` return a read-only
   **base list** seeded from `dogs.json`.
@@ -92,11 +98,13 @@ Base path: `/api`. Bodies and responses are JSON. Errors use a consistent envelo
 
 ### Auth (public)
 
-| Method | Endpoint             | Body                       | Description                    |
-|--------|----------------------|----------------------------|--------------------------------|
-| `POST` | `/api/auth/register` | `{ username, password }`   | Create account → `{ token, user }` |
-| `POST` | `/api/auth/login`    | `{ username, password }`   | Log in → `{ token, user }`     |
-| `GET`  | `/api/auth/me`       | —                          | Current user (requires token)  |
+| Method | Endpoint             | Body                       | Description                                        |
+|--------|----------------------|----------------------------|----------------------------------------------------|
+| `POST` | `/api/auth/register` | `{ username, password }`   | Create account → `{ accessToken, refreshToken, user }` |
+| `POST` | `/api/auth/login`    | `{ username, password }`   | Log in → `{ accessToken, refreshToken, user }`     |
+| `POST` | `/api/auth/refresh`  | `{ refreshToken }`         | Rotate → new `{ accessToken, refreshToken, user }` |
+| `POST` | `/api/auth/logout`   | `{ refreshToken }`         | Revoke the refresh token (204)                     |
+| `GET`  | `/api/auth/me`       | —                          | Current user (requires access token)               |
 
 ### Breeds
 
@@ -123,7 +131,7 @@ curl https://p01--dogs-backend--tkjgvp892kwn.code.run/api/breeds
 # Register and capture the token
 TOKEN=$(curl -s -X POST .../api/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"username":"me","password":"secret123"}' | jq -r .token)
+  -d '{"username":"me","password":"secret123"}' | jq -r .accessToken)
 
 # Authenticated: create a breed
 curl -X POST .../api/breeds \
@@ -159,7 +167,8 @@ See [`.env.example`](./.env.example).
 | Variable      | Required | Description                                                     |
 |---------------|:--------:|-----------------------------------------------------------------|
 | `MONGODB_URI` |   yes    | Mongo connection string **including the `/dogs` database name** |
-| `JWT_SECRET`  |   yes    | Secret used to sign auth tokens — a long random string          |
+| `JWT_SECRET`  |   yes    | Secret used to sign access tokens — a long random string        |
+| `CORS_ORIGIN` |    no    | Allowed frontend origin(s), comma-separated (e.g. your Vercel URL). Unset = allow any (dev). |
 | `PORT`        |    no    | Listen port (default `4000`; most hosts set this)               |
 | `NODE_ENV`    |    no    | `development` / `production`                                     |
 
@@ -185,9 +194,13 @@ Any container host works (this project is deployed on **Northflank**, free tier)
 - **Native Node host:** build `npm install`, start `npm start`.
 
 Set **`MONGODB_URI`** (with `/dogs`) and **`JWT_SECRET`** in the host's environment,
-then point the frontend's `VITE_API_BASE_URL` at this service's public URL.
+and **`CORS_ORIGIN`** to your deployed frontend URL (to restrict cross-origin access).
+Then point the frontend's `VITE_API_BASE_URL` at this service's public URL.
 
 > Free-tier hosts may cold-start after inactivity; the first request can take ~30–50s.
+
+**CI:** GitHub Actions ([`.github/workflows/ci.yml`](./.github/workflows/ci.yml)) runs the
+test suite on every push and pull request.
 
 ## Project structure
 
@@ -204,7 +217,8 @@ dogs-backend/
     ├── seed.js             # base list + per-user seeding
     ├── models/
     │   ├── user.js
-    │   └── breed.js        # compound unique index (userId, name)
+    │   ├── breed.js        # compound unique index (userId, name)
+    │   └── refreshToken.js # hashed refresh tokens, TTL index
     ├── routes/
     │   ├── auth.js
     │   └── breeds.js       # public reads, protected writes

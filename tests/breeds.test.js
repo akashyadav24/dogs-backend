@@ -5,6 +5,7 @@ const { createApp } = require('../src/app');
 const { connectDB, disconnectDB } = require('../src/db');
 const User = require('../src/models/user');
 const Breed = require('../src/models/breed');
+const RefreshToken = require('../src/models/refreshToken');
 
 let mongod;
 let app;
@@ -12,7 +13,7 @@ let app;
 // Register a fresh user and return helpers that attach the Authorization header.
 async function newUser(username = `u${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`) {
   const res = await request(app).post('/api/auth/register').send({ username, password: 'secret123' });
-  const token = res.body.token;
+  const token = res.body.accessToken;
   return {
     token,
     get: (url) => request(app).get(url).set('Authorization', `Bearer ${token}`),
@@ -37,13 +38,15 @@ afterAll(async () => {
 beforeEach(async () => {
   await User.deleteMany({});
   await Breed.deleteMany({});
+  await RefreshToken.deleteMany({});
 });
 
 describe('auth', () => {
-  it('registers a user, returns a token, and seeds their breeds', async () => {
+  it('registers a user, returns tokens, and seeds their breeds', async () => {
     const res = await request(app).post('/api/auth/register').send({ username: 'alice', password: 'secret123' });
     expect(res.status).toBe(201);
-    expect(res.body.token).toBeTruthy();
+    expect(res.body.accessToken).toBeTruthy();
+    expect(res.body.refreshToken).toBeTruthy();
     expect(res.body.user.username).toBe('alice');
 
     const user = await User.findOne({ username: 'alice' });
@@ -68,10 +71,46 @@ describe('auth', () => {
 
     const ok = await request(app).post('/api/auth/login').send({ username: 'loginuser', password: 'secret123' });
     expect(ok.status).toBe(200);
-    expect(ok.body.token).toBeTruthy();
+    expect(ok.body.accessToken).toBeTruthy();
+    expect(ok.body.refreshToken).toBeTruthy();
 
     const bad = await request(app).post('/api/auth/login').send({ username: 'loginuser', password: 'wrong' });
     expect(bad.status).toBe(401);
+  });
+});
+
+describe('refresh-token rotation', () => {
+  it('rotates: exchanges a refresh token for a new pair and invalidates the old one', async () => {
+    const reg = await request(app).post('/api/auth/register').send({ username: 'rotator', password: 'secret123' });
+    const first = reg.body.refreshToken;
+
+    const r1 = await request(app).post('/api/auth/refresh').send({ refreshToken: first });
+    expect(r1.status).toBe(200);
+    expect(r1.body.accessToken).toBeTruthy();
+    expect(r1.body.refreshToken).toBeTruthy();
+    expect(r1.body.refreshToken).not.toBe(first);
+
+    // The original (now rotated) token can no longer be used.
+    const reuse = await request(app).post('/api/auth/refresh').send({ refreshToken: first });
+    expect(reuse.status).toBe(401);
+
+    // The new one works.
+    const r2 = await request(app).post('/api/auth/refresh').send({ refreshToken: r1.body.refreshToken });
+    expect(r2.status).toBe(200);
+  });
+
+  it('rejects an unknown refresh token', async () => {
+    const res = await request(app).post('/api/auth/refresh').send({ refreshToken: 'not-a-real-token' });
+    expect(res.status).toBe(401);
+  });
+
+  it('logout revokes the refresh token', async () => {
+    const reg = await request(app).post('/api/auth/register').send({ username: 'byeuser', password: 'secret123' });
+    const rt = reg.body.refreshToken;
+
+    expect((await request(app).post('/api/auth/logout').send({ refreshToken: rt })).status).toBe(204);
+    // Once revoked it can't be refreshed.
+    expect((await request(app).post('/api/auth/refresh').send({ refreshToken: rt })).status).toBe(401);
   });
 });
 

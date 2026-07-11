@@ -8,8 +8,13 @@ const { notFound, errorHandler } = require('./middleware/errorHandler');
 function createApp() {
   const app = express();
 
-  // Permissive CORS so the separately-hosted frontend can call this API.
-  app.use(cors());
+  // Restrict CORS to the known frontend origin(s) when CORS_ORIGIN is set
+  // (comma-separated). If unset (e.g. local dev), allow any origin.
+  const allowed = (process.env.CORS_ORIGIN || '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
+  app.use(cors({ origin: allowed.length ? allowed : true }));
   app.use(express.json());
 
   // Health check (used by the host's health check and for uptime probes).
